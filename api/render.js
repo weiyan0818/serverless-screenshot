@@ -1,3 +1,10 @@
+// Vercel 不會設定 AWS_LAMBDA_JS_RUNTIME，@sparticuz/chromium 只在偵測到
+// Lambda 時才解出 al2023.tar.br（內含 libnss3.so）並設定 LD_LIBRARY_PATH。
+// 這個判斷在套件載入當下執行，所以必須寫在 require 之前。
+if (process.env.VERCEL && !process.env.AWS_LAMBDA_JS_RUNTIME) {
+  process.env.AWS_LAMBDA_JS_RUNTIME = 'nodejs20.x';
+}
+
 const chromium = require('@sparticuz/chromium');
 const puppeteer = require('puppeteer-core');
 const cloudinary = require('cloudinary').v2;
@@ -9,6 +16,7 @@ cloudinary.config({
   secure: true,
 });
 
+chromium.setGraphicsMode = false;
 chromium.font("https://raw.githack.com/googlefonts/noto-cjk/main/Sans/OTC/NotoSansCJK-Regular.ttc");
 
 const uploadFromBuffer = (buffer) => {
@@ -34,6 +42,9 @@ module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method Not Allowed' });
+  }
 
   const { htmlList } = req.body;
 
@@ -50,6 +61,7 @@ module.exports = async (req, res) => {
       defaultViewport: { width: 1000, height: 1000, deviceScaleFactor: 2 },
       executablePath: await chromium.executablePath(),
       headless: chromium.headless,
+      ignoreHTTPSErrors: true,
     });
 
     const page = await browser.newPage();
@@ -57,24 +69,25 @@ module.exports = async (req, res) => {
     for (let i = 0; i < htmlList.length; i++) {
       const htmlContent = htmlList[i];
 
-      await page.setContent(htmlContent, { waitUntil: 'domcontentloaded' });
+      await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
       await page.evaluate(async () => {
         await document.fonts.ready;
       });
 
-      const buffer = await page.screenshot({ type: 'jpeg', quality: 85 });
-      const uploadResult = await uploadFromBuffer(buffer);
+      const imageBuffer = await page.screenshot({ type: 'jpeg', quality: 85 });
+      const uploadResult = await uploadFromBuffer(imageBuffer);
       imageUrls.push(uploadResult.secure_url);
     }
 
     return res.status(200).json({
+      status: 'success',
       success: true,
       count: imageUrls.length,
       images: imageUrls
     });
 
   } catch (error) {
-    console.error('渲染失敗:', error);
+    console.error('Render Error:', error);
     return res.status(500).json({ error: error.message });
   } finally {
     if (browser) await browser.close();

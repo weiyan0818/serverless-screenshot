@@ -2,8 +2,8 @@
   "name": "serverless-screenshot",
   "version": "1.0.0",
   "dependencies": {
-    "@sparticuz/chromium": "119.0.2",
+    "@sparticuz/chromium": "^123.0.1",
     "cloudinary": "^2.0.0",
-    "puppeteer-core": "21.9.0"
+    "puppeteer-core": "^22.15.0"
   }
 }
