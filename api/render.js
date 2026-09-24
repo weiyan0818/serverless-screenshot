@@ -5,9 +5,14 @@ if (process.env.VERCEL && !process.env.AWS_LAMBDA_JS_RUNTIME) {
   process.env.AWS_LAMBDA_JS_RUNTIME = 'nodejs20.x';
 }
 
+const fs = require('node:fs');
+const path = require('node:path');
 const chromium = require('@sparticuz/chromium');
 const puppeteer = require('puppeteer-core');
 const cloudinary = require('cloudinary').v2;
+
+const CJK_FONT_URL =
+  'https://raw.githubusercontent.com/googlefonts/noto-cjk/main/Sans/OTF/TraditionalChinese/NotoSansCJKtc-Regular.otf';
 
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -17,7 +22,20 @@ cloudinary.config({
 });
 
 chromium.setGraphicsMode = false;
-chromium.font("https://raw.githack.com/googlefonts/noto-cjk/main/Sans/OTC/NotoSansCJK-Regular.ttc");
+
+const installCjkFont = async (executablePathReady) => {
+  const fileName = await chromium.font(CJK_FONT_URL);
+  await executablePathReady;
+
+  const home = process.env.HOME || '/tmp';
+  const source = path.join(home, '.fonts', fileName);
+  const fontDir = process.env.FONTCONFIG_PATH || '/tmp/fonts';
+  fs.mkdirSync(fontDir, { recursive: true });
+  const dest = path.join(fontDir, fileName);
+  if (fs.existsSync(source) && !fs.existsSync(dest)) {
+    fs.copyFileSync(source, dest);
+  }
+};
 
 const uploadFromBuffer = (buffer) => {
   return new Promise((resolve, reject) => {
@@ -56,6 +74,11 @@ module.exports = async (req, res) => {
   const imageUrls = [];
 
   try {
+    const executablePathReady = chromium.executablePath();
+    await installCjkFont(executablePathReady).catch((error) => {
+      console.error('CJK font load failed:', error);
+    });
+
     browser = await puppeteer.launch({
       args: [
         ...chromium.args,
@@ -63,10 +86,10 @@ module.exports = async (req, res) => {
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
-        '--single-process',
+        '--font-render-hinting=none',
       ],
       defaultViewport: { width: 1000, height: 1000, deviceScaleFactor: 2 },
-      executablePath: await chromium.executablePath(),
+      executablePath: await executablePathReady,
       headless: chromium.headless,
       ignoreHTTPSErrors: true,
     });
@@ -76,10 +99,24 @@ module.exports = async (req, res) => {
     for (let i = 0; i < htmlList.length; i++) {
       const htmlContent = htmlList[i];
 
-      await page.setContent(htmlContent, { waitUntil: 'domcontentloaded', timeout: 15000 });
-      await page.evaluateHandle('document.fonts.ready');
+      await page.setContent(htmlContent, { waitUntil: 'networkidle2', timeout: 15000 });
+      await page.addStyleTag({
+        content: `
+          @font-face {
+            font-family: "Noto Sans TC";
+            src: local("Noto Sans CJK TC"), local("Noto Sans CJK TC Regular"), local("Noto Sans TC");
+            font-weight: 100 900;
+            font-style: normal;
+            font-display: block;
+          }
+        `,
+      });
+      await page.evaluate(async () => {
+        await document.fonts.ready;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 600));
 
-      const imageBuffer = await page.screenshot({ type: 'jpeg', quality: 85 });
+      const imageBuffer = await page.screenshot({ type: 'jpeg', quality: 90 });
       const uploadResult = await uploadFromBuffer(imageBuffer);
       imageUrls.push(uploadResult.secure_url);
     }
