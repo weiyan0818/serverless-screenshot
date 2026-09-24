@@ -1,9 +1,9 @@
 {
   "version": 2,
   "functions": {
-    "api/**/*.js": {
+    "api/render.js": {
       "memory": 1024,
-      "maxDuration": 15
+      "maxDuration": 60
     }
   }
 }

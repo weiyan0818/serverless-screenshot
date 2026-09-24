@@ -57,7 +57,14 @@ module.exports = async (req, res) => {
 
   try {
     browser = await puppeteer.launch({
-      args: chromium.args,
+      args: [
+        ...chromium.args,
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--single-process',
+      ],
       defaultViewport: { width: 1000, height: 1000, deviceScaleFactor: 2 },
       executablePath: await chromium.executablePath(),
       headless: chromium.headless,
@@ -69,10 +76,8 @@ module.exports = async (req, res) => {
     for (let i = 0; i < htmlList.length; i++) {
       const htmlContent = htmlList[i];
 
-      await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
-      await page.evaluate(async () => {
-        await document.fonts.ready;
-      });
+      await page.setContent(htmlContent, { waitUntil: 'domcontentloaded', timeout: 15000 });
+      await page.evaluateHandle('document.fonts.ready');
 
       const imageBuffer = await page.screenshot({ type: 'jpeg', quality: 85 });
       const uploadResult = await uploadFromBuffer(imageBuffer);
