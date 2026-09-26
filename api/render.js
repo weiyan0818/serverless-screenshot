@@ -71,7 +71,6 @@ module.exports = async (req, res) => {
   }
 
   let browser = null;
-  const imageUrls = [];
 
   try {
     const executablePathReady = chromium.executablePath();
@@ -86,6 +85,8 @@ module.exports = async (req, res) => {
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
+        '--single-process',
+        '--disable-font-subsetting',
         '--font-render-hinting=none',
       ],
       defaultViewport: { width: 1000, height: 1000, deviceScaleFactor: 2 },
@@ -94,32 +95,36 @@ module.exports = async (req, res) => {
       ignoreHTTPSErrors: true,
     });
 
-    const page = await browser.newPage();
+    const imageUrls = new Array(htmlList.length);
+    await Promise.all(
+      htmlList.map(async (html, index) => {
+        const page = await browser.newPage();
+        try {
+          await page.setContent(html, { waitUntil: 'domcontentloaded', timeout: 10000 });
+          await page.addStyleTag({
+            content: `
+              @font-face {
+                font-family: "Noto Sans TC";
+                src: local("Noto Sans CJK TC"), local("Noto Sans CJK TC Regular"), local("Noto Sans TC");
+                font-weight: 100 900;
+                font-style: normal;
+                font-display: block;
+              }
+            `,
+          });
+          await page.evaluate(async () => {
+            await document.fonts.ready;
+          });
+          await new Promise((resolve) => setTimeout(resolve, 150));
 
-    for (let i = 0; i < htmlList.length; i++) {
-      const htmlContent = htmlList[i];
-
-      await page.setContent(htmlContent, { waitUntil: 'networkidle2', timeout: 15000 });
-      await page.addStyleTag({
-        content: `
-          @font-face {
-            font-family: "Noto Sans TC";
-            src: local("Noto Sans CJK TC"), local("Noto Sans CJK TC Regular"), local("Noto Sans TC");
-            font-weight: 100 900;
-            font-style: normal;
-            font-display: block;
-          }
-        `,
-      });
-      await page.evaluate(async () => {
-        await document.fonts.ready;
-      });
-      await new Promise((resolve) => setTimeout(resolve, 600));
-
-      const imageBuffer = await page.screenshot({ type: 'jpeg', quality: 90 });
-      const uploadResult = await uploadFromBuffer(imageBuffer);
-      imageUrls.push(uploadResult.secure_url);
-    }
+          const imageBuffer = await page.screenshot({ type: 'jpeg', quality: 85 });
+          const uploadResult = await uploadFromBuffer(imageBuffer);
+          imageUrls[index] = uploadResult.secure_url;
+        } finally {
+          await page.close();
+        }
+      })
+    );
 
     return res.status(200).json({
       status: 'success',
