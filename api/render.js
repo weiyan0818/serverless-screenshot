@@ -23,6 +23,121 @@ cloudinary.config({
 
 chromium.setGraphicsMode = false;
 
+const escapeHtmlAttr = (value) =>
+  String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+/**
+ * 依 style_key 產生卡片圖片 HTML。無 image_url 時回傳空字串，維持純文字排版。
+ */
+const buildStyledImageHtml = (styleKey, imageUrl) => {
+  if (!imageUrl) return '';
+
+  const src = escapeHtmlAttr(imageUrl);
+  const key = String(styleKey || '').toLowerCase();
+
+  switch (key) {
+    case 'minimalist':
+      return `
+        <div class="card-image card-image--minimalist" style="border: 2px solid #000; padding: 8px; background: #FFF; box-sizing: border-box;">
+          <img src="${src}" alt="" style="display: block; width: 100%; max-height: 380px; object-fit: cover;" />
+        </div>
+      `;
+    case 'glassmorphism':
+      return `
+        <div class="card-image card-image--glassmorphism" style="border-radius: 20px; border: 1px solid rgba(255, 255, 255, 0.3); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); overflow: hidden; box-sizing: border-box;">
+          <img src="${src}" alt="" style="display: block; width: 100%; max-height: 360px; object-fit: cover; border-radius: 20px;" />
+        </div>
+      `;
+    case 'memo_ios':
+      return `
+        <div class="card-image card-image--memo-ios" style="margin: 12px 0; box-sizing: border-box;">
+          <img src="${src}" alt="" style="display: block; width: 100%; max-height: 350px; object-fit: cover; border-radius: 16px; box-shadow: 0 4px 15px rgba(0,0,0,0.08);" />
+        </div>
+      `;
+    case 'notion_notes':
+      return `
+        <figure class="card-image card-image--notion-notes" style="margin: 10px 0; box-sizing: border-box;">
+          <img src="${src}" alt="" style="display: block; width: 100%; max-height: 340px; object-fit: cover; border: 1px solid #E9E9E7; border-radius: 8px;" />
+          <figcaption class="card-image__caption" style="margin-top: 6px; min-height: 1em; color: #787774; font-size: 12px; line-height: 1.4;"></figcaption>
+        </figure>
+      `;
+    default:
+      return `
+        <div class="card-image" style="margin: 12px 0; box-sizing: border-box;">
+          <img src="${src}" alt="" style="display: block; width: 100%; max-height: 360px; object-fit: cover;" />
+        </div>
+      `;
+  }
+};
+
+/**
+ * 將風格化圖片插入既有卡片 HTML。
+ * 優先替換 <!--CARD_IMAGE--> / {{CARD_IMAGE}}；否則插入常見內容容器開頭。
+ */
+const injectCardImage = (html, styleKey, imageUrl) => {
+  if (!html || !imageUrl) return html;
+
+  const imageBlock = buildStyledImageHtml(styleKey, imageUrl);
+  if (!imageBlock) return html;
+
+  if (/<!--\s*CARD_IMAGE\s*-->|{{\s*CARD_IMAGE\s*}}/i.test(html)) {
+    return html.replace(/<!--\s*CARD_IMAGE\s*-->|{{\s*CARD_IMAGE\s*}}/gi, imageBlock);
+  }
+
+  const contentMatchers = [
+    /(<(?:div|section|main)[^>]*class=["'][^"']*(?:card-content|card-body|content|page-body)[^"']*["'][^>]*>)/i,
+    /(<(?:div|section)[^>]*class=["'][^"']*(?:card|page)[^"']*["'][^>]*>)/i,
+  ];
+
+  for (const matcher of contentMatchers) {
+    if (matcher.test(html)) {
+      return html.replace(matcher, `$1${imageBlock}`);
+    }
+  }
+
+  if (/<body[^>]*>/i.test(html)) {
+    return html.replace(/<body([^>]*)>/i, `<body$1>${imageBlock}`);
+  }
+
+  return `${imageBlock}${html}`;
+};
+
+/**
+ * 統一解析 htmlList / carousel_pages，產出最終要截圖的 HTML 陣列。
+ * - htmlList 字串：維持原樣
+ * - htmlList / carousel_pages 物件：若有 image_url 則依 style_key 插入圖片
+ */
+const resolveHtmlList = (body = {}) => {
+  const styleKey = body.style_key || body.styleKey || '';
+  const pages = Array.isArray(body.carousel_pages)
+    ? body.carousel_pages
+    : Array.isArray(body.htmlList)
+      ? body.htmlList
+      : null;
+
+  if (!pages) return null;
+
+  return pages.map((item) => {
+    if (typeof item === 'string') {
+      return item;
+    }
+
+    if (!item || typeof item !== 'object') {
+      return '';
+    }
+
+    const html = item.html || item.content_html || item.contentHtml || '';
+    const imageUrl = item.image_url || item.imageUrl || '';
+    const itemStyle = item.style_key || item.styleKey || styleKey;
+
+    return injectCardImage(html, itemStyle, imageUrl);
+  }).filter((html) => typeof html === 'string' && html.length > 0);
+};
+
 const installCjkFont = async (executablePathReady) => {
   const fileName = await chromium.font(CJK_FONT_URL);
   await executablePathReady;
@@ -55,6 +170,22 @@ const uploadFromBuffer = (buffer) => {
   });
 };
 
+const waitForFontsAndImages = async (page) => {
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+    const images = Array.from(document.images || []);
+    await Promise.all(
+      images.map((img) => {
+        if (img.complete) return Promise.resolve();
+        return new Promise((resolve) => {
+          img.addEventListener('load', resolve, { once: true });
+          img.addEventListener('error', resolve, { once: true });
+        });
+      })
+    );
+  });
+};
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -64,10 +195,10 @@ module.exports = async (req, res) => {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  const { htmlList } = req.body;
+  const htmlList = resolveHtmlList(req.body);
 
-  if (!htmlList || !Array.isArray(htmlList) || htmlList.length === 0) {
-    return res.status(400).json({ error: '請提供有效的 htmlList 陣列' });
+  if (!htmlList || htmlList.length === 0) {
+    return res.status(400).json({ error: '請提供有效的 htmlList 或 carousel_pages 陣列' });
   }
 
   let browser = null;
@@ -112,9 +243,7 @@ module.exports = async (req, res) => {
               }
             `,
           });
-          await page.evaluate(async () => {
-            await document.fonts.ready;
-          });
+          await waitForFontsAndImages(page);
           await new Promise((resolve) => setTimeout(resolve, 150));
 
           const imageBuffer = await page.screenshot({ type: 'jpeg', quality: 85 });
